@@ -1,0 +1,37 @@
+{
+    "dockerFile": "Dockerfile",
+    "build":{
+        "args": {
+            "BASE_IMAGE": "nvcr.io/nvidia/pytorch:21.07-py3",
+        }
+    },
+    "runArgs": [
+        "--network=host",
+        "--cap-add=SYS_PTRACE",
+        "--security-opt=seccomp:unconfined",
+        "--security-opt=apparmor:unconfined",
+        "--volume=/tmp/.X11-unix:/tmp/.X11-unix",
+        "--runtime=nvidia",
+        "--gpus=all"
+    ],
+    "mounts": ["source=/home/amit/Data/AB,target=/DATA,type=bind"],
+    "containerEnv": { "DISPLAY": "${localEnv:DISPLAY}" },
+        // Set *default* container specific settings.json values on container create.
+        "settings": {
+            "terminal.integrated.profiles.linux": {
+                "bash": {
+                    "path": "bash"
+                },
+            },
+            "terminal.integrated.defaultProfile.linux": "bash"
+        },
+
+    "extensions": [
+		"ms-azuretools.vscode-docker",
+		"ms-python.python",
+		"yzhang.markdown-all-in-one",
+		"mhutchie.git-graph",
+		"ms-toolsai.jupyter",
+		"GitHub.copilot"
+	],
+}
