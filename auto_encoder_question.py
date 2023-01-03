@@ -63,6 +63,7 @@ class Decoder(nn.Module):
         self.fc1 = nn.Linear(1000, 512)
         self.fc2 =  nn.Linear(512, 768)
         self.fc3 =  nn.Linear(768, 1024)
+        self.fc4 =  nn.Linear(1024, 32*32*3)
 
         self.dropout = nn.Dropout(0.2)       
         
@@ -77,7 +78,11 @@ class Decoder(nn.Module):
         x = F.relu(self.fc2(x))
         x = self.dropout(x)
         
-        x = F.linear(self.fc3(x))
+        x = F.relu(self.fc3(x))
+        x = self.dropout(x)
+
+        x = self.fc4(x)
+        x = x.reshape(-1, 3, 32, 32)
         
         return x
         
