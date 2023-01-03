@@ -62,7 +62,7 @@ class Decoder(nn.Module):
         # number of hidden nodes in each layer (512-256-128-64)
         self.fc1 = nn.Linear(1000, 512)
         self.fc2 =  nn.Linear(512, 768)
-        self.fc2 =  nn.Linear(768, 1024)
+        self.fc3 =  nn.Linear(768, 1024)
 
         self.dropout = nn.Dropout(0.2)       
         
