@@ -6,6 +6,9 @@ import torchvision.transforms as transforms
 from torch.autograd import Function
 import torchvision
 import torch.nn.functional as F
+from tqdm import tqdm, trange
+from torch.utils.tensorboard import SummaryWriter
+import numpy as np
 
 def load_cifar10():
     transform = transforms.Compose(
@@ -21,6 +24,8 @@ class Encoder(nn.Module):
         
         self.resnet18 = torchvision.models.resnet18(pretrained=True)
         
+        # adjust last layer to cifar10
+        self.resnet18.fc = nn.Linear(512, 10)
 
     def forward(self, x):
         return self.resnet18(x)
@@ -29,11 +34,13 @@ class Encoder(nn.Module):
 class Quantizer(nn.Module):
     def __init__(self):
         super(Quantizer, self).__init__()
-        self.K = 256    # Number of elements in dictionary
-        self.D = 1000   # Dimension of each element in dictionary
+        self.K = 2048    # Number of elements in dictionary
+        self.D = 10   # Dimension of each element in dictionary
         
         self.embedding = nn.Embedding(self.K, self.D)
-        self.embedding.weight.data.uniform_(-1/self.K, 1/self.D)
+        self.embedding.weight.data.normal_()
+
+        self.mse_loss = nn.MSELoss()
 
     def forward(self, encoder_embedding):
         """
@@ -50,21 +57,28 @@ class Quantizer(nn.Module):
         # find the nearest element in the dictionary
         quantized_embedding = self.embedding(quantized_embedding_indices)
         
+        # compute quantization loss
+        quant_loss = self.mse_loss(encoder_embedding.detach(), quantized_embedding)
+        # q_latent_loss = F.mse_loss(quantized, inputs.detach())
+        # e_latent_loss = F.mse_loss(quantized.detach(), inputs)
+        # preserve gradients
+        quantized_embedding = encoder_embedding + (quantized_embedding - encoder_embedding).detach()
         
-        return quantized_embedding
-        
+        return quantized_embedding, quant_loss
 
 
 class Decoder(nn.Module):
     def __init__(self):
         super(Decoder, self).__init__()
         
-        # number of hidden nodes in each layer (512-256-128-64)
-        self.fc1 = nn.Linear(1000, 512)
-        self.fc2 =  nn.Linear(512, 768)
-        self.fc3 =  nn.Linear(768, 1024)
-        self.fc4 =  nn.Linear(1024, 32*32*3)
-
+        # 10 ==> 64 ==> 128 ==> 256 ==> 512 ==> 1024 ==> 3072
+        self.fc1 = nn.Linear(10,64)
+        self.fc2 = nn.Linear(64, 128)
+        self.fc3 = nn.Linear(128, 256)
+        self.fc4 = nn.Linear(256, 512)
+        self.fc5 = nn.Linear(512, 32*32)
+        self.fc6 = nn.Linear(1024, 32*32*3)
+        
         self.dropout = nn.Dropout(0.2)       
         
     def forward(self, quantized_embedding):
@@ -73,40 +87,83 @@ class Decoder(nn.Module):
         """
 
         x = F.relu(self.fc1(quantized_embedding))
-        x = self.dropout(x)
+        # x = self.dropout(x)
 
         x = F.relu(self.fc2(x))
-        x = self.dropout(x)
+        # x = self.dropout(x)
         
         x = F.relu(self.fc3(x))
-        x = self.dropout(x)
+        # x = self.dropout(x)
 
-        x = self.fc4(x)
+        x = F.relu(self.fc4(x))
+        # x = self.dropout(x)
+
+        x = F.relu(self.fc5(x))
+        # x = self.dropout(x)
+        
+        x = self.fc6(x)
         x = x.reshape(-1, 3, 32, 32)
         
         return x
         
-
-
-
 # Training Loop
 
 if __name__=="__main__":
     dataset = load_cifar10()
     dataloader = DataLoader(dataset, batch_size=64, shuffle=True, num_workers=4)
+    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+    EPOCHS = 50
 
-    encoder = Encoder()
-    quantizer = Quantizer()
-    decoder = Decoder()
+    encoder = Encoder().to(device)
+    quantizer = Quantizer().to(device)
+    decoder = Decoder().to(device)
 
-    for batch in dataloader:
-        input, target = batch
-        encoder_embedding = encoder(input)
-        quantized_embedding = quantizer(encoder_embedding)
-        reconstructed_batch = decoder(quantized_embedding)
+    mse_loss = nn.MSELoss()
 
-        # Compute loss and backpropagate
+    optimizer = torch.optim.SGD(list(encoder.parameters()) + list(quantizer.parameters()) + list(decoder.parameters()), lr=1e-1, weight_decay=1e-5)
 
-        # Update weights
+    lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[30, 40, 40], gamma=0.1)
 
-    pass
+    tb_writer = SummaryWriter()
+    
+    for epoch in list(range(EPOCHS)):
+        
+        batch_iter = tqdm(enumerate(dataloader), 'Training', total=len(dataloader), leave=False)
+        train_losses = []
+        for batch_idx, batch in batch_iter:
+            input, target_label = batch
+            input = input.to(device)
+            # target = target.to(device)
+            
+            encoder_embedding = encoder(input)
+            quantized_embedding, qaunt_loss = quantizer(encoder_embedding)
+            pred = decoder(quantized_embedding)
+
+            # compute losses:
+            # 1. reconstruction loss
+            recon_loss = mse_loss(input, pred)
+
+            loss = recon_loss + qaunt_loss
+            
+            optimizer.zero_grad()  # zerograd the parameters
+            loss.backward()
+            optimizer.step()
+
+            train_losses.append(loss.item())
+            batch_iter.set_description(f'Training: [{epoch:d}/{EPOCHS:d}] (loss {loss.item():.4f})')  # update progressbar
+
+        
+            if batch_idx % 10 == 0:               
+                tb_writer.add_images('input', (input[:5,...]+0.5).clip(0,1), epoch)
+                tb_writer.add_images('decoder output', (pred[:5,...]+0.5).clip(0,1), epoch)
+                tb_writer.flush()
+        
+        tb_writer.add_scalar('Loss/train', np.mean(train_losses), epoch)
+        tb_writer.add_scalar('lr', optimizer.param_groups[0]['lr'], epoch)
+        tb_writer.flush()
+        lr_scheduler.step()
+
+        
+        
+        
+    
