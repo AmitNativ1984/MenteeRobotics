@@ -34,7 +34,7 @@ class Encoder(nn.Module):
 class Quantizer(nn.Module):
     def __init__(self):
         super(Quantizer, self).__init__()
-        self.K = 2048    # Number of elements in dictionary
+        self.K = 1024    # Number of elements in dictionary
         self.D = 10   # Dimension of each element in dictionary
         
         self.embedding = nn.Embedding(self.K, self.D)
@@ -58,13 +58,15 @@ class Quantizer(nn.Module):
         quantized_embedding = self.embedding(quantized_embedding_indices)
         
         # compute quantization loss
-        quant_loss = self.mse_loss(encoder_embedding.detach(), quantized_embedding)
-        # q_latent_loss = F.mse_loss(quantized, inputs.detach())
-        # e_latent_loss = F.mse_loss(quantized.detach(), inputs)
+        # this loss is not backpropagated to the encoder network
+        quantization_loss = self.mse_loss(encoder_embedding.detach(), quantized_embedding)
+               
         # preserve gradients
         quantized_embedding = encoder_embedding + (quantized_embedding - encoder_embedding).detach()
         
-        return quantized_embedding, quant_loss
+        loss = quantization_loss
+        
+        return quantized_embedding, loss
 
 
 class Decoder(nn.Module):
@@ -87,19 +89,19 @@ class Decoder(nn.Module):
         """
 
         x = F.relu(self.fc1(quantized_embedding))
-        # x = self.dropout(x)
+        x = self.dropout(x)
 
         x = F.relu(self.fc2(x))
-        # x = self.dropout(x)
+        x = self.dropout(x)
         
         x = F.relu(self.fc3(x))
-        # x = self.dropout(x)
+        x = self.dropout(x)
 
         x = F.relu(self.fc4(x))
-        # x = self.dropout(x)
+        x = self.dropout(x)
 
         x = F.relu(self.fc5(x))
-        # x = self.dropout(x)
+        x = self.dropout(x)
         
         x = self.fc6(x)
         x = x.reshape(-1, 3, 32, 32)
@@ -122,7 +124,7 @@ if __name__=="__main__":
 
     optimizer = torch.optim.SGD(list(encoder.parameters()) + list(quantizer.parameters()) + list(decoder.parameters()), lr=1e-1, weight_decay=1e-5)
 
-    lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[30, 40, 40], gamma=0.1)
+    lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[45], gamma=0.1)
 
     tb_writer = SummaryWriter()
     
@@ -139,10 +141,10 @@ if __name__=="__main__":
             quantized_embedding, qaunt_loss = quantizer(encoder_embedding)
             pred = decoder(quantized_embedding)
 
-            # compute losses:
-            # 1. reconstruction loss
+            # reconstruction losses:
             recon_loss = mse_loss(input, pred)
 
+            # total loss:
             loss = recon_loss + qaunt_loss
             
             optimizer.zero_grad()  # zerograd the parameters
